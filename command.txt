@@ -1,4 +1,4 @@
-# Ajouter des streamers à la main (les logins introuvables sont signalés)
+# Ajouter des streamers à la main 
 python twitch_clips.py add squeezie kamet0 gotaga zerator
 
 # Ou remplir la base automatiquement avec les streamers FR en live (> 200 viewers)
@@ -13,3 +13,4 @@ python twitch_clips.py download
 # Voir l'état de la base
 python twitch_clips.py stats
 
+ 
