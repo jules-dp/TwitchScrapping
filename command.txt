@@ -1,5 +1,5 @@
 # Ajouter des streamers à la main 
-python twitch_clips.py add squeezie kamet0 gotaga zerator
+python twitch_clips.py add squeezie kamet0 gotaga
 
 # Ou remplir la base automatiquement avec les streamers FR en live (> 200 viewers)
 python twitch_clips.py discover --pages 3 --min-viewers 200
