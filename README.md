@@ -1,6 +1,5 @@
 # Twitch Clips Scraper
 
-Outil Python qui collecte les clips de streamers francophones sur Twitch, les stocke dans une base SQLite et les télécharge automatiquement. L'objectif à terme est de les recadrer au format vertical (9:16) et de les publier sur TikTok.
 
 ## Fonctionnalités
 
