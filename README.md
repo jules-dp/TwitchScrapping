@@ -36,7 +36,23 @@ Il faut aussi installer FFmpeg
 1. Crée une application sur la [console développeur Twitch](https://dev.twitch.tv/console) pour obtenir un `Client ID` et un `Client Secret`.
 2. Copie le fichier d'exemple et renseigne tes identifiants :
 
+```bash
+cp .env.example .env
+```
 
+```env
+TWITCH_CLIENT_ID=ton_client_id
+TWITCH_CLIENT_SECRET=ton_client_secret
+
+## Utilisation
+
+```bash
+# 1. Récupérer les clips des streamers et remplir la base
+python collect.py
+
+# 2. Télécharger les clips en attente
+python download.py
+```
 
 Les vidéos sont enregistrées dans le dossier `clips/` et la base se trouve dans `twitch_clips.db`.
 
