@@ -18,7 +18,7 @@ L'outil utilise l'API Twitch Helix pour la recherche de clips et `yt-dlp` pour l
 
 1. **Cloner le dépôt** :
    ```bash
-   git clone https://github.com/votre-username/TwitchScrapping.git
+   git clone https://github.com/jules-dp/TwitchScrapping.git
    cd TwitchScrapping
    ```
 
