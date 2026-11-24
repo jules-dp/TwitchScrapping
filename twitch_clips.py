@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
 """
-twitch_clips.py — collecte et téléchargement de clips Twitch
-(API Helix + SQLite + yt-dlp)
+twitch_clips.py — téléchargement de clips Twitch via la commande grab
 
-Commandes :
-    add <login...>   ajoute des streamers à la base par leur login Twitch
-    discover         ajoute automatiquement les streamers FR actuellement en live
-    collect          récupère les clips récents de tous les streamers de la base
-    download         télécharge les meilleurs clips pas encore téléchargés
-    stats            résumé de la base
+Commande :
+    grab <login...>   télécharge les clips d'un streamer filtrés par date, vues et durée
 """
 
 import argparse
@@ -16,7 +11,7 @@ import os
 import sqlite3
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -39,9 +34,7 @@ CREATE TABLE IF NOT EXISTS streamers (
     login             TEXT UNIQUE NOT NULL,
     display_name      TEXT,
     language          TEXT DEFAULT 'fr',
-    peak_viewers      INTEGER DEFAULT 0,          -- max de viewers vu via discover
-    added_at          TEXT NOT NULL,
-    last_collected_at TEXT
+    added_at          TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS clips (
@@ -56,13 +49,11 @@ CREATE TABLE IF NOT EXISTS clips (
     language     TEXT,
     created_at   TEXT,                            -- date de création du clip
     collected_at TEXT NOT NULL,
-    status       TEXT NOT NULL DEFAULT 'new',     -- new | downloaded | failed
+    status       TEXT NOT NULL DEFAULT 'downloaded', -- new | downloaded | failed
     file_path    TEXT,
-    error        TEXT,
-    posted       INTEGER NOT NULL DEFAULT 0
+    error        TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_clips_status   ON clips(status, view_count DESC);
 CREATE INDEX IF NOT EXISTS idx_clips_streamer ON clips(streamer_id);
 """
 
@@ -131,74 +122,69 @@ class Twitch:
 
 
 # --------------------------------------------------------------------------
-# Commandes
+# Commande
 # --------------------------------------------------------------------------
-def cmd_add(args, db, tw):
-    logins = [l.lower().lstrip("@") for l in args.logins]
-    for i in range(0, len(logins), 100):  # l'API accepte 100 logins max
-        batch = logins[i : i + 100]
-        users = tw.get("users", {"login": batch})["data"]
-        found = set()
-        for u in users:
+def cmd_grab(args, db, tw):
+    """Télécharge les clips d'un/des streamer(s) filtrés par date, vues et durée."""
+    # Parse --since (YYYY-MM-DD) to ISO started_at
+    try:
+        since_dt = datetime.strptime(args.since, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        sys.exit(f"Format de date invalide pour --since: {args.since}. Attendu YYYY-MM-DD.")
+    since = iso(since_dt)
+
+    total_ok = 0
+    total_rows = 0
+
+    for login_arg in args.logins:
+        login = login_arg.lower().lstrip("@")
+
+        # Résoudre le streamer_id
+        row = db.execute("SELECT id, login FROM streamers WHERE login = ?", (login,)).fetchone()
+        if row:
+            streamer_id, streamer_login = row
+        else:
+            # Tenter de le créer via l'API users
+            users = tw.get("users", {"login": login})["data"]
+            if not users:
+                print(f"! introuvable : {login}")
+                continue
+            u = users[0]
+            streamer_id, streamer_login = u["id"], u["login"]
             db.execute(
                 """INSERT INTO streamers (id, login, display_name, added_at)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                       login = excluded.login,
-                       display_name = excluded.display_name""",
-                (u["id"], u["login"], u["display_name"], utcnow()),
+                   VALUES (?, ?, ?, ?)""",
+                (streamer_id, streamer_login, u["display_name"], utcnow()),
             )
-            found.add(u["login"])
-            print(f"+ {u['display_name']}")
-        for missing in sorted(set(batch) - found):
-            print(f"! introuvable : {missing}")
-    db.commit()
+            db.commit()
+            print(f"+ {streamer_login} (auto-ajouté)")
 
+        print(f"\n=== {streamer_login} ===")
 
-def cmd_discover(args, db, tw):
-    """Ajoute les streamers francophones actuellement en live (triés par viewers)."""
-    added = 0
-    for s in tw.paginate(
-        "streams",
-        {"language": "fr", "type": "live", "first": 100},
-        max_pages=args.pages,
-    ):
-        if s["viewer_count"] < args.min_viewers:
-            break  # la liste est triée par viewers décroissants
-        exists = db.execute("SELECT 1 FROM streamers WHERE id = ?", (s["user_id"],)).fetchone()
-        db.execute(
-            """INSERT INTO streamers (id, login, display_name, peak_viewers, added_at)
-               VALUES (?, ?, ?, ?, ?)
-               ON CONFLICT(id) DO UPDATE SET
-                   login = excluded.login,
-                   display_name = excluded.display_name,
-                   peak_viewers = MAX(peak_viewers, excluded.peak_viewers)""",
-            (s["user_id"], s["user_login"], s["user_name"], s["viewer_count"], utcnow()),
-        )
-        if not exists:
-            added += 1
-            print(f"+ {s['user_name']} ({s['viewer_count']} viewers)")
-    db.commit()
-    print(f"{added} nouveau(x) streamer(s) ajouté(s).")
-
-
-def cmd_collect(args, db, tw):
-    since = iso(datetime.now(timezone.utc) - timedelta(hours=args.hours))
-    streamers = db.execute(
-        "SELECT id, login FROM streamers ORDER BY peak_viewers DESC, login"
-    ).fetchall()
-    if not streamers:
-        sys.exit("Aucun streamer en base. Utilise 'add' ou 'discover' d'abord.")
-
-    total_new = 0
-    for sid, login in streamers:
-        new = 0
-        for c in tw.paginate(
+        # Fetch clips via paginate
+        clips = list(tw.paginate(
             "clips",
-            {"broadcaster_id": sid, "started_at": since, "first": 100},
+            {"broadcaster_id": streamer_id, "started_at": since, "first": 100},
             max_pages=args.max_pages,
-        ):
-            exists = db.execute("SELECT 1 FROM clips WHERE id = ?", (c["id"],)).fetchone()
+        ))
+
+        # Filtrer côté client (view_count et duration)
+        filtered = [
+            c for c in clips
+            if c["view_count"] >= args.views and c["duration"] <= args.max_duration
+        ]
+
+        if not filtered:
+            print("  Aucun clip ne correspond aux critères.")
+            continue
+
+        # Trier par vues décroissantes
+        filtered.sort(key=lambda c: c["view_count"], reverse=True)
+
+        for c in filtered:
+            total_rows += 1
+            clip_id = c["id"]
+            # Upsert en base (pour éviter les doublons et stocker les métadonnées)
             db.execute(
                 """INSERT INTO clips
                        (id, streamer_id, title, url, view_count, duration,
@@ -208,109 +194,65 @@ def cmd_collect(args, db, tw):
                        view_count = excluded.view_count,
                        title = excluded.title""",
                 (
-                    c["id"], sid, c["title"], c["url"], c["view_count"], c["duration"],
+                    clip_id, streamer_id, c["title"], c["url"], c["view_count"], c["duration"],
                     c["creator_name"], c["game_id"], c["language"], c["created_at"], utcnow(),
                 ),
             )
-            if not exists:
-                new += 1
-        db.execute("UPDATE streamers SET last_collected_at = ? WHERE id = ?", (utcnow(), sid))
+            db.commit()
+
+            ok, info = _download_clip(db, clip_id, c["url"], streamer_login)
+            if ok:
+                total_ok += 1
+                print(f"  OK    {clip_id} ({c['view_count']} vues, {c['duration']:.1f}s)")
+            else:
+                print(f"  ECHEC {clip_id} : {info}")
+            time.sleep(1)
+
+    print(f"\nTotal : {total_ok}/{total_rows} clip(s) téléchargé(s) dans {CLIPS_DIR}/")
+
+
+def _download_clip(db, clip_id, url, login):
+    """Télécharge un clip unique et met à jour la base. Retourne (success, path_or_error)."""
+    out_dir = CLIPS_DIR / login
+    out_dir.mkdir(parents=True, exist_ok=True)
+    opts = {
+        "outtmpl": str(out_dir / f"{clip_id}.%(ext)s"),
+        "format": "best",
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+    }
+    try:
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            path = ydl.prepare_filename(info)
+        db.execute(
+            "UPDATE clips SET status='downloaded', file_path=?, error=NULL WHERE id=?",
+            (path, clip_id),
+        )
         db.commit()
-        total_new += new
-        print(f"{login:<25} +{new} clip(s)")
-    print(f"Total : {total_new} nouveau(x) clip(s).")
-
-
-def cmd_download(args, db):
-    since = iso(datetime.now(timezone.utc) - timedelta(hours=args.since_hours))
-    statuses = ("new", "failed") if args.retry_failed else ("new",)
-    placeholders = ",".join("?" * len(statuses))
-    rows = db.execute(
-        f"""SELECT c.id, c.url, s.login
-            FROM clips c JOIN streamers s ON s.id = c.streamer_id
-            WHERE c.status IN ({placeholders})
-              AND c.view_count >= ?
-              AND c.duration <= ?
-              AND c.created_at >= ?
-            ORDER BY c.view_count DESC
-            LIMIT ?""",
-        (*statuses, args.min_views, args.max_duration, since, args.limit),
-    ).fetchall()
-
-    if not rows:
-        print("Rien à télécharger avec ces filtres.")
-        return
-
-    ok = 0
-    for clip_id, url, login in rows:
-        out_dir = CLIPS_DIR / login
-        out_dir.mkdir(parents=True, exist_ok=True)
-        opts = {
-            "outtmpl": str(out_dir / f"{clip_id}.%(ext)s"),
-            "format": "best",
-            "quiet": True,
-            "no_warnings": True,
-            "noprogress": True,
-        }
-        try:
-            with YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                path = ydl.prepare_filename(info)
-            db.execute(
-                "UPDATE clips SET status='downloaded', file_path=?, error=NULL WHERE id=?",
-                (path, clip_id),
-            )
-            ok += 1
-            print(f"OK    {login}/{clip_id}")
-        except Exception as e:  # noqa: BLE001
-            db.execute(
-                "UPDATE clips SET status='failed', error=? WHERE id=?",
-                (str(e)[:500], clip_id),
-            )
-            print(f"ECHEC {login}/{clip_id} : {e}")
+        return True, path
+    except Exception as e:  # noqa: BLE001
+        db.execute(
+            "UPDATE clips SET status='failed', error=? WHERE id=?",
+            (str(e)[:500], clip_id),
+        )
         db.commit()
-        time.sleep(1)  # on reste poli avec Twitch
-    print(f"{ok}/{len(rows)} clip(s) téléchargé(s) dans {CLIPS_DIR}/")
-
-
-def cmd_stats(db):
-    n = db.execute("SELECT COUNT(*) FROM streamers").fetchone()[0]
-    print(f"Streamers : {n}")
-    for status, count in db.execute("SELECT status, COUNT(*) FROM clips GROUP BY status"):
-        print(f"  clips {status:<11}: {count}")
-    print("Top streamers par nombre de clips :")
-    for login, count, best in db.execute(
-        """SELECT s.login, COUNT(*), MAX(c.view_count)
-           FROM clips c JOIN streamers s ON s.id = c.streamer_id
-           GROUP BY s.id ORDER BY COUNT(*) DESC LIMIT 10"""
-    ):
-        print(f"  {login:<25} {count:>4} clips (meilleur : {best} vues)")
+        return False, str(e)
 
 
 # --------------------------------------------------------------------------
 def build_parser():
-    p = argparse.ArgumentParser(description="Collecte de clips Twitch FR")
+    p = argparse.ArgumentParser(description="Téléchargement de clips Twitch")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    a = sub.add_parser("add", help="ajouter des streamers par login")
-    a.add_argument("logins", nargs="+")
+    g = sub.add_parser("grab", help="télécharger les clips d'un streamer")
+    g.add_argument("logins", nargs="+", help="login(s) du/de des streamer(s)")
+    g.add_argument("--since", required=True, help="date de début (YYYY-MM-DD)")
+    g.add_argument("--views", type=int, default=30, help="nombre minimum de vues (défaut 30)")
+    g.add_argument("--max-duration", type=float, default=60.0, help="durée max en secondes (défaut 60)")
+    g.add_argument("--max-pages", type=int, default=2, help="pages de 100 clips par streamer (défaut 2)")
 
-    d = sub.add_parser("discover", help="ajouter les streamers FR en live")
-    d.add_argument("--pages", type=int, default=3, help="pages de 100 streams (défaut 3)")
-    d.add_argument("--min-viewers", type=int, default=200, help="seuil de viewers (défaut 200)")
-
-    c = sub.add_parser("collect", help="récupérer les clips récents")
-    c.add_argument("--hours", type=int, default=48, help="fenêtre de temps (défaut 48h)")
-    c.add_argument("--max-pages", type=int, default=2, help="pages de 100 clips par streamer")
-
-    dl = sub.add_parser("download", help="télécharger les meilleurs clips")
-    dl.add_argument("--min-views", type=int, default=20)
-    dl.add_argument("--max-duration", type=float, default=60.0)
-    dl.add_argument("--limit", type=int, default=20)
-    dl.add_argument("--since-hours", type=int, default=72, help="clips créés depuis N heures")
-    dl.add_argument("--retry-failed", action="store_true")
-
-    sub.add_parser("stats", help="résumé de la base")
     return p
 
 
@@ -321,16 +263,7 @@ def main():
     db.execute("PRAGMA journal_mode = WAL")
     db.executescript(SCHEMA)
 
-    if args.cmd == "add":
-        cmd_add(args, db, Twitch())
-    elif args.cmd == "discover":
-        cmd_discover(args, db, Twitch())
-    elif args.cmd == "collect":
-        cmd_collect(args, db, Twitch())
-    elif args.cmd == "download":
-        cmd_download(args, db)
-    elif args.cmd == "stats":
-        cmd_stats(db)
+    cmd_grab(args, db, Twitch())
 
 
 if __name__ == "__main__":
