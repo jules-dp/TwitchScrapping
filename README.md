@@ -1,68 +1,74 @@
-# Twitch Clips Scraper
+# Twitch Clips Grabber 🎮
 
-Outil Python qui collecte les clips de streamers francophones sur Twitch, les stocke dans une base SQLite et les télécharge automatiquement. L'objectif à terme est de les recadrer au format vertical (9:16) et de les publier sur TikTok.
+Un outil en ligne de commande simple et efficace pour collecter et télécharger les clips Twitch d'un ou plusieurs streamers, avec des filtres avancés (date, vues, durée).
 
-## Fonctionnalités
+L'outil utilise l'API Twitch Helix pour la recherche de clips et `yt-dlp` pour le téléchargement des vidéos. Une base de données SQLite locale permet de garder une trace des clips déjà traités.
 
-- [x] Authentification à l'API Twitch Helix (OAuth, client credentials)
-- [x] Collecte des clips d'une liste de streamers francophones
-- [x] Stockage des streamers et des clips dans une base SQLite
-- [x] Téléchargement automatique des clips avec `yt-dlp`
+## 🚀 Fonctionnalités
 
-## Stack technique
+- **Commande unique `grab`** : Automatise tout le processus (résolution du streamer, recherche des clips, filtrage et téléchargement).
+- **Filtres personnalisables** :
+  - `--since` : Date de début (format YYYY-MM-DD).
+  - `--views` : Nombre minimum de vues (défaut : 30).
+  - `--max-duration` : Durée maximale en secondes (défaut : 60).
+- **Gestion intelligente** : Auto-ajout des streamers inconnus et stockage des métadonnées en base SQLite.
+- **Organisation** : Téléchargement des vidéos dans des dossiers séparés par streamer.
 
-- **Python 3.10+**
-- **API Twitch Helix** pour récupérer les streamers et les clips
-- **SQLite** pour la base de données
-- **yt-dlp** pour le téléchargement des vidéos
-- **FFmpeg** pour le traitement vidéo (étape de recadrage)
+## 🛠 Installation
 
-## Installation
+1. **Cloner le dépôt** :
+   ```bash
+   git clone https://github.com/votre-username/TwitchScrapping.git
+   cd TwitchScrapping
+   ```
 
+2. **Créer un environnement virtuel et installer les dépendances** :
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # Sur Windows: .venv\Scripts\activate
+   pip install -r requirements.txt
+   ```
+
+3. **Configurer les identifiants Twitch** :
+   Créez un fichier `.env` à la racine du projet (utilisez `.env.example` comme modèle) :
+   ```env
+   TWITCH_CLIENT_ID=votre_client_id
+   TWITCH_CLIENT_SECRET=votre_client_secret
+   # Optionnel :
+   DB_PATH=twitch_clips.db
+   CLIPS_DIR=clips
+   ```
+   *Note : Vous pouvez obtenir ces identifiants sur la [Twitch Developer Console](https://dev.twitch.tv/console).*
+
+## 📖 Utilisation
+
+La commande principale est `grab`. Elle accepte un ou plusieurs logins de streamers.
+
+### Exemples
+
+Télécharger les clips de **Squeezie** depuis le 1er novembre 2026 avec au moins 50 vues :
 ```bash
-git clone https://github.com/jules-dp/TwitchScrapping
-cd TwitchScrapping
-
-python -m venv .venv
-source .venv/bin/activate
-
-pip install -r requirements.txt
+python twitch_clips.py grab squeezie --since 2026-11-01 --views 50
 ```
 
-Il faut aussi installer FFmpeg
-
-## Configuration
-
-1. Crée une application sur la [console développeur Twitch](https://dev.twitch.tv/console) pour obtenir un `Client ID` et un `Client Secret`.
-2. Copie le fichier d'exemple et renseigne tes identifiants :
-
+Télécharger les clips de **Kameto** et **Gotaga** (max 45 secondes) :
 ```bash
-cp .env.example .env
+python twitch_clips.py grab kamet0 gotaga --since 2026-11-20 --max-duration 45
 ```
 
-```env
-TWITCH_CLIENT_ID=ton_client_id
-TWITCH_CLIENT_SECRET=ton_client_secret
+### Arguments disponibles
+- `logins` : Un ou plusieurs noms d'utilisateurs Twitch.
+- `--since` (Requis) : Date de début de recherche (YYYY-MM-DD).
+- `--views` : Seuil de vues minimum (Défaut : 30).
+- `--max-duration` : Durée max du clip en secondes (Défaut : 60.0).
+- `--max-pages` : Nombre de pages de 100 clips à parcourir par streamer (Défaut : 2).
 
-## Utilisation
+## 🗃 Architecture
 
-```bash
-# 1. Récupérer les clips des streamers et remplir la base
-python collect.py
+- **`twitch_clips.py`** : Script principal contenant toute la logique.
+- **`twitch_clips.db`** : Base de données SQLite stockant les streamers et les métadonnées des clips.
+- **`clips/`** : Dossier de destination des vidéos téléchargées (organisé par login).
 
-# 2. Télécharger les clips en attente
-python download.py
-```
+## 📝 Licence
 
-Les vidéos sont enregistrées dans le dossier `clips/` et la base se trouve dans `twitch_clips.db`.
-
-## Structure de la base de données
-
-| Table       | Contenu principal                                                         |
-|-------------|---------------------------------------------------------------------------|
-| `streamers` | identifiant Twitch, pseudo, nom affiché                                   |
-| `clips`     | identifiant du clip, streamer, titre, URL, vues, durée, date, statut de téléchargement |
-
-## Avertissement
-
-Les clips appartiennent à leurs créateurs et aux streamers concernés. Avant toute republication, vérifie les conditions d'utilisation de Twitch et de TikTok, et obtiens l'accord des streamers. Ce projet est à but éducatif et personnel.
+Ce projet est destiné à un usage personnel. Assurez-vous de respecter les conditions d'utilisation de Twitch et les droits des créateurs de contenu lors de l'utilisation de cet outil.
